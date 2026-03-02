@@ -1,0 +1,87 @@
+name: Nightly Build & Deploy
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # every night at 2am UTC
+  workflow_dispatch:       # allow manual trigger from GitHub UI
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO_BACKEND: product-manager-backend
+  ECR_REPO_FRONTEND: product-manager-frontend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest  # AMD64 runner — matches EC2 architecture
+    outputs:
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.SOURCE_REPO }}  # e.g. your-username/product-manager-cms
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}  # PAT with repo read access
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_BACKEND }}:latest \
+            ./backend
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_BACKEND }}:latest
+
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            --build-arg VITE_API_URL=${{ secrets.VITE_API_URL }} \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_FRONTEND }}:latest \
+            ./frontend
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_FRONTEND }}:latest
+
+  deploy-and-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout infra repo (for smoke tests)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.SOURCE_REPO }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            aws ecr get-login-password --region us-east-1 | \
+              docker login --username AWS --password-stdin ${{ needs.build-and-push.outputs.ecr_registry }}
+            cd ~/product-manager-cms
+            git pull origin master
+            export ECR_REGISTRY=${{ needs.build-and-push.outputs.ecr_registry }}
+            export RDS_ENDPOINT=${{ secrets.RDS_ENDPOINT }}
+            export DB_USER=${{ secrets.DB_USER }}
+            export DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --force-recreate
+
+      - name: Wait for containers to start
+        run: sleep 15
+
+      - name: Run smoke tests
+        run: |
+          chmod +x smoke-tests/smoke.sh
+          bash smoke-tests/smoke.sh https://${{ secrets.EC2_HOST }}
