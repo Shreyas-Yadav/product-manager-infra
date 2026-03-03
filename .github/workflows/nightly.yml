@@ -96,8 +96,18 @@ jobs:
           host: ${{ env.TEMP_EC2_IP }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 5m
           script: |
             cd ~/app
+
+            # Show container status for diagnostics
+            echo "=== Container status ==="
+            docker ps -a
+
+            # Wait for backend to be ready (MySQL init can cause backend to restart)
+            echo "=== Waiting for backend to be ready ==="
+            timeout 120 bash -c 'until curl -sf http://localhost:3000/health; do echo "waiting..."; sleep 5; done'
+
             bash smoke-tests/smoke.sh http://localhost:3000
 
       - name: Terminate temp EC2
