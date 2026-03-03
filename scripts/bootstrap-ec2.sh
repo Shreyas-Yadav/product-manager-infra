@@ -5,7 +5,7 @@ set -e
 sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install -y ca-certificates curl unzip git certbot
 
-# Install Docker from Docker's official repo (works on both 22.04 and 24.04)
+
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
